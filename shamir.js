@@ -1,5 +1,8 @@
 const fs = require("fs");
 
+// A large prime modulus for Shamir operations (127-bit Mersenne prime)
+const P = (1n << 127n) - 1n;
+
 /**
  * Map a single character to its numeric digit considering the base.
  * - 0-9 -> 0..9
@@ -33,8 +36,29 @@ function parseValue(base, valueStr) {
 }
 
 /**
+ * Modular exponentiation
+ */
+function modPow(base, exp, mod) {
+  let result = 1n;
+  base %= mod;
+  while (exp > 0n) {
+    if (exp & 1n) result = (result * base) % mod;
+    base = (base * base) % mod;
+    exp >>= 1n;
+  }
+  return result;
+}
+
+/**
+ * Modular inverse (Fermat's little theorem since P is prime)
+ */
+function modInv(a, p) {
+  return modPow((a % p + p) % p, p - 2n, p);
+}
+
+/**
  * Lagrange interpolation at x=0 to get secret (constant term).
- * Works in integer/rational domain; divisions must be exact for valid inputs.
+ * Works modulo P.
  */
 function lagrangeAtZero(shares) {
   let secret = 0n;
@@ -48,18 +72,19 @@ function lagrangeAtZero(shares) {
     for (let j = 0; j < k; j++) {
       if (i === j) continue;
       const [xj] = shares[j];
-      num *= -xj;
-      den *= (xi - xj);
+      num = (num * (-xj + P)) % P;
+      den = (den * (xi - xj + P)) % P;
     }
 
-    // Integer division is expected to be exact for correct data
-    secret += yi * (num / den);
+    const term = (yi % P) * (num * modInv(den, P)) % P;
+    secret = (secret + term) % P;
   }
+
   return secret;
 }
 
 /**
- * Evaluate the reconstructed polynomial at x using the same k shares.
+ * Evaluate the reconstructed polynomial at x using the same k shares (mod P).
  */
 function evalPoly(shares, x) {
   const k = shares.length;
@@ -72,10 +97,11 @@ function evalPoly(shares, x) {
     for (let j = 0; j < k; j++) {
       if (i === j) continue;
       const [xj] = shares[j];
-      num *= (x - xj);
-      den *= (xi - xj);
+      num = (num * (x - xj + P)) % P;
+      den = (den * (xi - xj + P)) % P;
     }
-    val += yi * (num / den);
+    const term = (yi % P) * (num * modInv(den, P)) % P;
+    val = (val + term) % P;
   }
   return val;
 }
@@ -99,7 +125,7 @@ function solve(jsonInput) {
     const base = Number(data[key].base);
     const valueStr = String(data[key].value);
     const y = parseValue(base, valueStr);
-    shares.push([BigInt(i), y]);
+    shares.push([BigInt(i), y % P]);
   }
 
   if (shares.length < k) {
@@ -114,7 +140,7 @@ function solve(jsonInput) {
   const wrongShares = [];
   for (const [x, y] of shares) {
     const expected = evalPoly(basis, x);
-    if (expected !== y) {
+    if (expected !== (y % P)) {
       wrongShares.push({ x: x.toString(), given: y.toString(), expected: expected.toString() });
     }
   }
